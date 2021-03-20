@@ -1,9 +1,9 @@
 #include <ESP8266WiFi.h>
-
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
+#include <EEPROM.h>
 
 #define TRIGGER_PIN 5
 #define CALLBUTTON_PIN 4
@@ -12,17 +12,50 @@
 
 WiFiManager wifiManager;
 
-char mqtt_server[256] = "dayman.lab.alxelectronics.com";
-char mqtt_port[6] = "1883";
-
-WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 256);
-WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
-
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 const char* callButtonTopic = "callbuttons/all";
 long lastReconnectAttempt = 0;
+
+bool shouldSaveConfig = false;
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+/********************** Begin EEPROM Section *****************/
+#define EEPROM_SALT 12664
+typedef struct
+{
+  int   salt = EEPROM_SALT;
+  char mqtt_server[256]  = "";
+  char mqtt_port[6] = "";
+} MQTTSettings;
+MQTTSettings mqtt_settings;
+
+WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_settings.mqtt_server, 256);
+WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_settings.mqtt_port, 6);
+
+void eeprom_read()
+{
+  EEPROM.begin(512);
+  EEPROM.get(0, mqtt_settings);
+  EEPROM.end();
+}
+
+
+void eeprom_saveconfig()
+{
+  EEPROM.begin(512);
+  EEPROM.put(0, mqtt_settings);
+  EEPROM.commit();
+  EEPROM.end();
+}
+
+/*********************************************************************************/
 
 
 bool doInitialSetup = false;
@@ -40,6 +73,14 @@ void setup() {
   pinMode(CONFIG_LED, OUTPUT);
   pinMode(CALL_LED, OUTPUT);
   digitalWrite(CALL_LED, HIGH);
+
+  eeprom_read();
+  if (mqtt_settings.salt != EEPROM_SALT)
+  {
+    Serial.println("Invalid settings in EEPROM, trying with defaults");
+    MQTTSettings defaults;
+    mqtt_settings = defaults;
+  }
 
   //set up WiFi
   char setup_ssid[32];
@@ -87,6 +128,7 @@ void loop() {
     //wifiManager.resetSettings();
 
     wifiManager.setTimeout(120);
+    wifiManager.setSaveConfigCallback(saveConfigCallback);
 
     //set the SSID name to something noteworthy
     char setup_ssid[32];
@@ -100,6 +142,13 @@ void loop() {
     {
       Serial.println("Connected!!!");
       doInitialSetup = false;
+
+      strcpy(mqtt_settings.mqtt_server, custom_mqtt_server.getValue());
+      strcpy(mqtt_settings.mqtt_port, custom_mqtt_port.getValue());
+
+      eeprom_saveconfig();
+      shouldSaveConfig = false;
+      mqtt_reconnect();
     }
     digitalWrite(CONFIG_LED, HIGH);
   }
@@ -193,12 +242,9 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 bool mqtt_reconnect() {
   // Attempt to connect
   client.disconnect();
-
-  strcpy(mqtt_server, custom_mqtt_server.getValue());
-  strcpy(mqtt_port, custom_mqtt_port.getValue());
   
-  unsigned int portNum = atoi(mqtt_port);
-  client.setServer(mqtt_server, portNum);
+  unsigned int portNum = atoi(mqtt_settings.mqtt_port);
+  client.setServer(mqtt_settings.mqtt_server, portNum);
   char setup_name[32];
   sprintf(setup_name, "CALLBUTTON-%d", ESP.getChipId());
   if (client.connect(setup_name)) {
