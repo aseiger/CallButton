@@ -65,6 +65,7 @@ bool isCalled = false;
 bool ignoreCallButtonPress = false;
 
 void setup() {
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP 
   Serial.begin(115200);
   Serial.println("\n Starting");
   //pin setups
